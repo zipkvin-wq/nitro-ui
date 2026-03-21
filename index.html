@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nitro Serverless PoC - V2</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        input, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; }
+        button { background: #ca3e47; color: white; border: none; cursor: pointer; }
+        .chat-box { height: 300px; overflow-y: auto; background: #000; padding: 10px; margin-bottom: 10px; }
+        .msg { margin: 5px 0; padding: 8px; border-radius: 4px; }
+        .msg.sent { background: #2a2a2a; text-align: right; }
+        .msg.received { background: #ca3e47; }
+        .hidden { display: none; }
+        audio { display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container" id="auth-screen">
+    <h2>Nitro Serverless - Login</h2>
+    <input type="text" id="username" placeholder="Username">
+    <input type="password" id="password" placeholder="Password">
+    <button onclick="login()">Login</button>
+    <button onclick="register()">Register</button>
+    <p id="auth-error" style="color:red;"></p>
+</div>
+
+<div class="container hidden" id="app-screen">
+    <h2 id="welcome-msg">Welcome</h2>
+    <hr>
+    <h3>Add Friend</h3>
+    <div style="display:flex; gap:10px;">
+        <input type="text" id="search-query" placeholder="Username to search">
+        <button onclick="searchUsers()">Search</button>
+    </div>
+    <div id="search-results"></div>
+
+    <hr>
+    <h3>Friends</h3>
+    <div id="friends-list"></div>
+
+    <hr>
+    <div id="chat-section" class="hidden">
+        <h3 id="chat-with">Chat</h3>
+        <button id="call-btn" onclick="startCall()" style="background:#4db8ff; margin-bottom:10px;">Call</button>
+        <div class="chat-box" id="chat-box"></div>
+        <div style="display:flex; gap:10px;">
+            <input type="text" id="msg-input" placeholder="Type a message...">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+</div>
+
+<div id="incoming-call-alert" class="container hidden" style="background:#4db8ff; position:fixed; bottom:20px; left:20px; right:20px; z-index:1000;">
+    <h3>Incoming Call...</h3>
+    <button onclick="acceptCall()">Accept</button>
+    <button onclick="rejectCall()" style="background:#000;">Reject</button>
+</div>
+
+<audio id="remote-audio" autoplay playsinline></audio>
+
+<script>
+    // --- CONFIGURATION ---
+    const API_URL = 'https://nitro-serverless.ksamper-gm.workers.dev'; 
+
+    let token = '';
+    let currentUser = null;
+    let currentChatId = null;
+    let pc = null;
+    let localStream = null;
+
+    async function register() {
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        const res = await fetch(`${API_URL}/api/register`, {
+            method: 'POST', mode: 'cors', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({username: u, password: p})
+        });
+        const data = await res.json();
+        if(data.error) return alert(data.error);
+        handleLoginSuccess(data);
+    }
+
+    async function login() {
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        const res = await fetch(`${API_URL}/api/login`, {
+            method: 'POST', mode: 'cors', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({username: u, password: p})
+        });
+        const data = await res.json();
+        if(data.error) return alert(data.error);
+        handleLoginSuccess(data);
+    }
+
+    function handleLoginSuccess(data) {
+        token = data.token;
+        currentUser = data.user;
+        document.getElementById('auth-screen').classList.add('hidden');
+        document.getElementById('app-screen').classList.remove('hidden');
+        document.getElementById('welcome-msg').innerText = `Welcome, ${currentUser.username}!`;
+        
+        startLoop();
+    }
+
+    // --- MAIN APP LOOP (Messages + Signaling) ---
+    function startLoop() {
+        setInterval(async () => {
+            // 1. Poll signals (Calls)
+            const sRes = await fetch(`${API_URL}/api/signal/poll`, {headers: {'Authorization': token}});
+            const sData = await sRes.json();
+            if (sData.signals) sData.signals.forEach(s => handleSignal(s));
+
+            // 2. Poll messages (If chatting)
+            if (currentChatId) loadMessages();
+        }, 3000); 
+    }
+
+    // --- WebRTC Logic ---
+    async function setupPC(targetId) {
+        if (pc) pc.close();
+        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        
+        pc.onicecandidate = (e) => {
+            if (e.candidate) sendSignal(targetId, 'candidate', e.candidate);
+        };
+        
+        pc.ontrack = (e) => {
+            document.getElementById('remote-audio').srcObject = e.streams[0];
+        };
+
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    async function sendSignal(targetId, type, data) {
+        await fetch(`${API_URL}/api/signal/send`, {
+            method: 'POST', headers: {'Content-Type':'application/json', 'Authorization': token},
+            body: JSON.stringify({target_id: targetId, type, data})
+        });
+    }
+
+    let lastOffer = null;
+    let lastCallerId = null;
+
+    async function handleSignal(signal) {
+        const data = JSON.parse(signal.data);
+        if (signal.type === 'offer') {
+            lastOffer = data;
+            lastCallerId = signal.sender_id;
+            document.getElementById('incoming-call-alert').classList.remove('hidden');
+        } else if (signal.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(data));
+        } else if (signal.type === 'candidate') {
+            await pc.addIceCandidate(new RTCIceCandidate(data));
+        }
+    }
+
+    async function startCall() {
+        if (!currentChatId) return;
+        document.getElementById('call-btn').innerText = "Calling...";
+        await setupPC(currentChatId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal(currentChatId, 'offer', offer);
+    }
+
+    async function acceptCall() {
+        document.getElementById('incoming-call-alert').classList.add('hidden');
+        await setupPC(lastCallerId);
+        await pc.setRemoteDescription(new RTCSessionDescription(lastOffer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal(lastCallerId, 'answer', answer);
+    }
+
+    function rejectCall() {
+        document.getElementById('incoming-call-alert').classList.add('hidden');
+    }
+
+    // --- MESSAGES ---
+    async function sendMessage() {
+        const input = document.getElementById('msg-input');
+        const content = input.value;
+        if (!content || !currentChatId) return;
+
+        await fetch(`${API_URL}/api/messages/send`, {
+            method: 'POST', headers: {'Content-Type':'application/json', 'Authorization': token},
+            body: JSON.stringify({receiver_id: currentChatId, content})
+        });
+        input.value = '';
+        loadMessages();
+    }
+
+    async function loadMessages() {
+        const res = await fetch(`${API_URL}/api/messages/${currentChatId}`, {headers: {'Authorization': token}});
+        const data = await res.json();
+        const box = document.getElementById('chat-box');
+        // Only update if message count changed (Very basic optimization)
+        if (box.children.length !== data.messages.length) {
+            box.innerHTML = data.messages.map(m => 
+                `<div class="msg ${m.sender_id === currentUser.id ? 'sent' : 'received'}">${m.content}</div>`
+            ).join('');
+            box.scrollTop = box.scrollHeight;
+        }
+    }
+
+    async function searchUsers() {
+        const q = document.getElementById('search-query').value;
+        const res = await fetch(`${API_URL}/api/users/search?q=${q}`, {headers: {'Authorization': token}});
+        const data = await res.json();
+        const div = document.getElementById('search-results');
+        div.innerHTML = data.users.map(u => 
+            `<div>${u.username} <button onclick="setChat('${u.id}', '${u.username}')">Select</button></div>`
+        ).join('');
+    }
+
+    function setChat(id, name) {
+        currentChatId = id;
+        document.getElementById('chat-section').classList.remove('hidden');
+        document.getElementById('chat-with').innerText = `Chat with ${name}`;
+        loadMessages();
+    }
+
+</script>
+</body>
+</html>
