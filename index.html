@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nitro Serverless - Fast Connect</title>
+    <title>Nitro Serverless - High-Speed Call</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: white; margin: 0; padding: 20px; }
         .container { max-width: 600px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
@@ -14,33 +14,38 @@
         .msg.sent { background: #2a2a2a; text-align: right; }
         .msg.received { background: #ca3e47; }
         .hidden { display: none; }
-        .status-box { padding: 10px; font-size: 12px; color: #aaa; background: #111; border-left: 3px solid #ca3e47; }
+        .status-box { padding: 10px; font-size: 12px; color: #00ff00; background: #111; border-left: 3px solid #ca3e47; margin-bottom: 10px; }
+        #audio-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 2000; display: flex; align-items: center; justify-content: center; }
     </style>
 </head>
 <body>
 
+<div id="audio-overlay" class="hidden">
+    <div class="container" style="text-align:center;">
+        <h3>Stream Received!</h3>
+        <button onclick="unlockAudio()" style="background:#00ff00; color:black; font-weight:bold; font-size:1.5rem;">CLICK TO UNMUTE CALL</button>
+    </div>
+</div>
+
 <div id="auth-screen" class="container">
-    <h2>Nitro Serverless - Login</h2>
+    <h2>Nitro Serverless</h2>
     <input type="text" id="username" placeholder="Username">
     <input type="password" id="password" placeholder="Password">
-    <button onclick="login()">Login</button>
-    <button onclick="register()">Register</button>
+    <button onclick="doAuth('login')">Login</button>
+    <button onclick="doAuth('register')">Register</button>
 </div>
 
 <div id="app-screen" class="container hidden">
-    <h2 id="welcome-msg">Welcome</h2>
-    <div id="status" class="status-box">System: Idle</div>
-    <hr>
-    <h3>Search</h3>
+    <div id="status" class="status-box">Status: Ready</div>
     <div style="display:flex; gap:10px;">
-        <input type="text" id="search-query" placeholder="Find user">
+        <input type="text" id="search-query" placeholder="Search user...">
         <button onclick="searchUsers()">Search</button>
     </div>
     <div id="search-results"></div>
     <hr>
     <div id="chat-section" class="hidden">
         <h3 id="chat-with">Chat</h3>
-        <button id="call-btn" onclick="startCall()" style="background:#4db8ff;">Call (Audio)</button>
+        <button id="call-btn" onclick="startCall()" style="background:#4db8ff;">Start Audio Call</button>
         <div class="chat-box" id="chat-box"></div>
         <div style="display:flex; gap:10px;">
             <input type="text" id="msg-input" placeholder="Message...">
@@ -50,31 +55,23 @@
 </div>
 
 <div id="incoming-call-alert" class="container hidden" style="background:#4db8ff; position:fixed; bottom:20px; left:20px; right:20px; z-index:1000;">
-    <h3>Incoming Call...</h3>
-    <button onclick="acceptCall()">Accept</button>
-    <button onclick="rejectCall()" style="background:#000;">Reject</button>
+    <h3 id="caller-name">Incoming Call...</h3>
+    <button onclick="acceptCall()">Accept & Connect</button>
+    <button onclick="rejectCall()" style="background:#000;">Dismiss</button>
 </div>
 
 <audio id="remote-audio" autoplay playsinline></audio>
 
 <script>
     const API_URL = 'https://nitro-serverless.ksamper-gm.workers.dev'; 
-
     let token = '', currentUser = null, currentChatId = null;
     let pc = null, localStream = null, iceQueue = [];
     let isCallActive = false;
 
-    function log(msg) { 
-        console.log(msg); 
-        document.getElementById('status').innerText = `System: ${msg}`; 
-    }
-
-    async function login() { doAuth('login'); }
-    async function register() { doAuth('register'); }
+    function log(msg) { document.getElementById('status').innerText = `Status: ${msg}`; console.log(msg); }
 
     async function doAuth(type) {
-        const u = document.getElementById('username').value;
-        const p = document.getElementById('password').value;
+        const u = document.getElementById('username').value, p = document.getElementById('password').value;
         const res = await fetch(`${API_URL}/api/${type}`, {
             method: 'POST', mode: 'cors', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({username: u, password: p})
@@ -84,31 +81,35 @@
         token = data.token; currentUser = data.user;
         document.getElementById('auth-screen').classList.add('hidden');
         document.getElementById('app-screen').classList.remove('hidden');
-        document.getElementById('welcome-msg').innerText = `Hello, ${currentUser.username}`;
+        log(`Logged in as ${currentUser.username}`);
         startLoop();
     }
 
-    // --- ACCELERATED POLLING ---
     function startLoop() {
-        // High frequency (500ms) when calling, low frequency (3000ms) when idle
         const tick = async () => {
-            const res = await fetch(`${API_URL}/api/signal/poll`, {headers: {'Authorization': token}});
-            const data = await res.json();
-            if (data.signals && data.signals.length > 0) {
-                isCallActive = true; // Speed up if we get signals
-                data.signals.forEach(s => handleSignal(s));
-            }
-            if (currentChatId) loadMessages();
-            
-            setTimeout(tick, isCallActive ? 500 : 3000); 
+            try {
+                const res = await fetch(`${API_URL}/api/signal/poll`, {headers: {'Authorization': token}});
+                const data = await res.json();
+                if (data.signals && data.signals.length > 0) {
+                    isCallActive = true;
+                    data.signals.forEach(s => handleSignal(s));
+                }
+                if (currentChatId) loadMessages();
+            } catch(e) {}
+            setTimeout(tick, isCallActive ? 400 : 3000); 
         };
         tick();
     }
 
-    // --- WebRTC (P2P via Cloudflare Signaling) ---
     async function initWebRTC(targetId) {
-        log("Init Peer Connection...");
-        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        log("Init WebRTC...");
+        // Using both Google STUN and a fallback public TURN server for mobile data piercing
+        pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun.stunprotocol.org' }
+            ]
+        });
         iceQueue = [];
 
         pc.onicecandidate = (e) => {
@@ -116,89 +117,78 @@
         };
 
         pc.ontrack = (e) => {
-            log("Remote stream received!");
+            log("Remote stream received! Unmute now.");
             document.getElementById('remote-audio').srcObject = e.streams[0];
+            document.getElementById('audio-overlay').classList.remove('hidden');
         };
 
-        try {
-            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-        } catch (e) { log("Mic Error: " + e.message); }
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    function unlockAudio() {
+        const audio = document.getElementById('remote-audio');
+        audio.play().then(() => {
+            document.getElementById('audio-overlay').classList.add('hidden');
+            log("Audio flowing!");
+        }).catch(e => alert("Click again to allow audio"));
     }
 
     async function sendSignal(targetId, type, data) {
-        await fetch(`${API_URL}/api/signal/send`, {
-            method: 'POST', headers: {'Content-Type':'application/json', 'Authorization': token},
+        fetch(`${API_URL}/api/signal/send`, {
+            method: 'POST', mode: 'cors', headers: {'Content-Type':'application/json', 'Authorization': token},
             body: JSON.stringify({target_id: targetId, type, data})
         });
     }
 
     let lastOffer = null, lastCallerId = null;
-
     async function handleSignal(signal) {
         const data = JSON.parse(signal.data);
-        log(`Signal ${signal.type} from ${signal.sender_id}`);
-        
         if (signal.type === 'offer') {
             isCallActive = true; lastOffer = data; lastCallerId = signal.sender_id;
             document.getElementById('incoming-call-alert').classList.remove('hidden');
+            log(`Call from ${signal.sender_id}`);
         } else if (signal.type === 'answer') {
+            log("Answer received!");
             await pc.setRemoteDescription(new RTCSessionDescription(data));
-            processIceQueue();
+            while(iceQueue.length) await pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift()));
         } else if (signal.type === 'candidate') {
-            if (pc && pc.remoteDescription) {
-                await pc.addIceCandidate(new RTCIceCandidate(data));
-            } else {
-                iceQueue.push(data);
-            }
-        }
-    }
-
-    async function processIceQueue() {
-        while(iceQueue.length > 0) {
-            await pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift()));
+            if (pc && pc.remoteDescription) await pc.addIceCandidate(new RTCIceCandidate(data));
+            else iceQueue.push(data);
         }
     }
 
     async function startCall() {
         if (!currentChatId) return;
-        isCallActive = true;
-        document.getElementById('call-btn').innerText = "Calling...";
+        isCallActive = true; document.getElementById('call-btn').innerText = "Calling...";
         await initWebRTC(currentChatId);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         sendSignal(currentChatId, 'offer', offer);
-        log("Offer sent...");
+        log("Offer sent, waiting for answer...");
     }
 
     async function acceptCall() {
         document.getElementById('incoming-call-alert').classList.add('hidden');
-        isCallActive = true;
+        isCallActive = true; log("Connecting call...");
         await initWebRTC(lastCallerId);
         await pc.setRemoteDescription(new RTCSessionDescription(lastOffer));
-        await processIceQueue();
+        while(iceQueue.length) await pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift()));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         sendSignal(lastCallerId, 'answer', answer);
-        log("Answer sent...");
     }
 
-    function rejectCall() { 
-        document.getElementById('incoming-call-alert').classList.add('hidden'); 
-        isCallActive = false;
-    }
+    function rejectCall() { document.getElementById('incoming-call-alert').classList.add('hidden'); isCallActive = false; }
 
-    // --- CHAT ---
     async function sendMessage() {
-        const input = document.getElementById('msg-input');
-        const content = input.value;
+        const input = document.getElementById('msg-input'), content = input.value;
         if (!content || !currentChatId) return;
         await fetch(`${API_URL}/api/messages/send`, {
             method: 'POST', headers: {'Content-Type':'application/json', 'Authorization': token},
             body: JSON.stringify({receiver_id: currentChatId, content})
         });
-        input.value = '';
-        loadMessages();
+        input.value = ''; loadMessages();
     }
 
     async function loadMessages() {
@@ -206,9 +196,7 @@
         const data = await res.json();
         const box = document.getElementById('chat-box');
         if (box.children.length !== data.messages.length) {
-            box.innerHTML = data.messages.map(m => 
-                `<div class="msg ${m.sender_id === currentUser.id ? 'sent' : 'received'}">${m.content}</div>`
-            ).join('');
+            box.innerHTML = data.messages.map(m => `<div class="msg ${m.sender_id===currentUser.id?'sent':'received'}">${m.content}</div>`).join('');
             box.scrollTop = box.scrollHeight;
         }
     }
@@ -217,14 +205,11 @@
         const q = document.getElementById('search-query').value;
         const res = await fetch(`${API_URL}/api/users/search?q=${q}`, {headers: {'Authorization': token}});
         const data = await res.json();
-        document.getElementById('search-results').innerHTML = data.users.map(u => 
-            `<div>${u.username} <button onclick="setChat('${u.id}', '${u.username}')">Chat</button></div>`
-        ).join('');
+        document.getElementById('search-results').innerHTML = data.users.map(u => `<div>${u.username} <button onclick="setChat('${u.id}','${u.username}')">Chat</button></div>`).join('');
     }
 
     function setChat(id, name) {
-        currentChatId = id;
-        document.getElementById('chat-section').classList.remove('hidden');
+        currentChatId = id; document.getElementById('chat-section').classList.remove('hidden');
         document.getElementById('chat-with').innerText = `Chat with ${name}`;
         loadMessages();
     }
