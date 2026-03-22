@@ -3,144 +3,125 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nitro Peer - Global Stable</title>
-    <!-- Multi-CDN backup strategy to bypass regional blocks -->
-    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <title>Nitro 2.0 - Local Test</title>
+    <!-- Use Socket.io from CDN to match your local server -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; background: #121212; color: #fff; margin: 0; padding: 15px; }
-        .container { max-width: 450px; margin: 20px auto; background: #1e1e1e; padding: 25px; border-radius: 12px; border: 1px solid #333; }
-        h2 { color: #ca3e47; text-align: center; margin-top: 0; }
-        input, button { padding: 14px; margin: 8px 0; width: 100%; box-sizing: border-box; border-radius: 8px; font-size: 16px; border: 1px solid #333; outline: none; }
-        input { background: #000; color: #fff; }
-        button { background: #ca3e47; color: #fff; border: none; font-weight: bold; cursor: pointer; }
-        button:hover { background: #ff4d5a; }
-        .status { padding: 10px; font-size: 14px; background: #000; text-align: center; color: #00ff00; border-radius: 8px; margin-bottom: 15px; border: 1px solid #333; }
-        .chat-view { height: 300px; overflow-y: auto; background: #000; padding: 15px; border-radius: 8px; margin: 15px 0; border: 1px solid #333; }
-        .msg { margin: 10px 0; padding: 10px; border-radius: 12px; font-size: 15px; max-width: 85%; line-height: 1.4; }
-        .msg.me { background: #333; margin-left: auto; text-align: right; border-bottom-right-radius: 2px; }
-        .msg.them { background: #ca3e47; border-bottom-left-radius: 2px; }
+        body { font-family: sans-serif; background: #121212; color: #fff; margin:0; padding:20px; }
+        .container { max-width: 500px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        input, button { padding: 12px; margin: 8px 0; width: 100%; box-sizing: border-box; }
+        button { background: #ca3e47; color: #fff; border:none; cursor:pointer; font-weight:bold; }
+        .chat-view { height: 300px; overflow-y: auto; background: #000; padding:10px; margin:10px 0; }
+        .msg { margin:5px 0; padding:10px; border-radius:5px; max-width: 80%; }
+        .msg.me { background: #333; margin-left: auto; text-align: right; }
+        .msg.them { background: #ca3e47; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
 
-<div id="login-form" class="container">
-    <h2>Nitro Peer</h2>
-    <div id="login-status" class="status" style="color:#aaa;">Ready to Login</div>
+<div id="auth-panel" class="container">
+    <h2>Nitro 2.0</h2>
     <input type="text" id="u-name" placeholder="Username">
     <input type="password" id="u-pass" placeholder="Password">
-    <button onclick="handleAuth('login')">LOGIN</button>
-    <button onclick="handleAuth('register')" style="background:#222;">JOIN NITRO</button>
+    <button onclick="login()">LOGIN</button>
+    <button onclick="register()" style="background:#222;">REGISTER</button>
 </div>
 
-<div id="app-view" class="container hidden">
-    <div id="app-status" class="status">System: Loading...</div>
-    <div style="display:flex; gap:10px;">
-        <input type="text" id="srch-user" placeholder="Search friends">
-        <button onclick="doUserSearch()" style="width:90px;">Find</button>
-    </div>
-    <div id="srch-results"></div>
-    <hr style="border:0; border-top:1px solid #333; margin:20px 0;">
-    <div id="chat-box" class="hidden">
-        <h3 id="peer-name">Chat</h3>
-        <button id="call-start" onclick="callFriend()" style="background:#4db8ff;">VOICE CALL</button>
-        <div id="history" class="chat-view"></div>
+<div id="chat-panel" class="container hidden">
+    <h3 id="welcome">Welcome!</h3>
+    <div id="status" style="color:#00ff00;">Connected</div>
+    <hr>
+    <input type="text" id="search-peer" placeholder="Search for a user...">
+    <button onclick="findFriends()">Search</button>
+    <div id="results"></div>
+    <hr>
+    <div id="chat-window" class="hidden">
+        <h3 id="talking-to">Chatting</h3>
+        <div id="messages" class="chat-view"></div>
         <div style="display:flex; gap:10px;">
-            <input type="text" id="msg-txt" placeholder="Write message...">
-            <button onclick="submitMsg()" style="width:80px;">Send</button>
+            <input type="text" id="msg-content" placeholder="Type a message...">
+            <button onclick="send()" style="width:80px;">Send</button>
         </div>
     </div>
 </div>
 
-<div id="call-alert" class="container hidden" style="position:fixed; bottom:20px; left:20px; right:20px; background:#4db8ff; border:2px solid #fff;">
-    <h3>Incoming Audio Call...</h3>
-    <button onclick="answerCall()" style="background:#00ff00; color:#000;">ACCEPT</button>
-    <button onclick="document.getElementById('call-alert').className='hidden'" style="background:#000;">IGNORE</button>
-</div>
-
-<audio id="vocal-player" autoplay playsinline></audio>
-
 <script>
-    const WORKER_URL = 'https://nitro-serverless.ksamper-gm.workers.dev';
-    let activeToken = '', me = null, activePeer = null, peer = null;
+    // --- IMPORTANT: CHANGE THIS TO YOUR .trycloudflare.com LINK ---
+    const TUNNEL_URL = 'http://localhost:3000'; // Change me when using Cloudflare!
 
-    function setStatus(id, text) { document.getElementById(id).innerText = text; }
+    let socket = null, me = null, activeChat = null;
 
-    async function handleAuth(mode) {
+    async function login() { doAuth('login'); }
+    async function register() { doAuth('register'); }
+
+    async function doAuth(type) {
         const u = document.getElementById('u-name').value, p = document.getElementById('u-pass').value;
-        if(!u || !p) return alert("Fill in details");
-        setStatus('login-status', "Authenticating...");
-        try {
-            const r = await fetch(WORKER_URL + '/api/' + mode, {
-                method: 'POST', body: JSON.stringify({username:u, password:p}),
-                headers: {'Content-Type': 'application/json'}
-            });
-            const d = await r.json();
-            if(d.error) throw new Error(d.error);
-            activeToken = d.token; me = d.user;
-            document.getElementById('login-form').className = 'hidden';
-            document.getElementById('app-view').className = 'container';
-            setStatus('app-status', "Logged in as " + me.username);
-            initPeerNetwork();
-            setInterval(() => { if(activePeer) syncChat(); }, 3000);
-        } catch(e) {
-            alert("Auth Fail: " + e.message);
-            setStatus('login-status', "Error: " + e.message);
-        }
-    }
-
-    function initPeerNetwork() {
-        if(typeof Peer === 'undefined') return setTimeout(initPeerNetwork, 1000);
-        peer = new Peer(me.id, { debug: 2, config: {'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }]} });
-        peer.on('open', (id) => setStatus('app-status', "Ready for Calls"));
-        peer.on('call', (c) => { window.incCall = c; document.getElementById('call-alert').className = 'container'; });
-    }
-
-    async function answerCall() {
-        document.getElementById('call-alert').className = 'hidden';
-        const s = await navigator.mediaDevices.getUserMedia({audio:true});
-        window.incCall.answer(s);
-        window.incCall.on('stream', (rs) => { document.getElementById('vocal-player').srcObject = rs; setStatus('app-status', "In Call"); });
-    }
-
-    async function callFriend() {
-        if(!activePeer) return;
-        setStatus('app-status', "Calling...");
-        const s = await navigator.mediaDevices.getUserMedia({audio:true});
-        const c = peer.call(activePeer, s);
-        c.on('stream', (rs) => { document.getElementById('vocal-player').srcObject = rs; setStatus('app-status', "Audio Connected"); });
-    }
-
-    async function submitMsg() {
-        const t = document.getElementById('msg-txt').value;
-        if(!t || !activePeer) return;
-        await fetch(WORKER_URL + '/api/messages/send', {
-            method:'POST', body: JSON.stringify({receiver_id:activePeer, content:t}),
-            headers:{'Authorization':activeToken, 'Content-Type':'application/json'}
+        const res = await fetch(`${TUNNEL_URL}/api/${type}`, {
+            method: 'POST', body: JSON.stringify({username:u, password:p}),
+            headers: {'Content-Type': 'application/json'}
         });
-        document.getElementById('msg-txt').value = ''; syncChat();
+        const data = await res.json();
+        if(data.error) return alert(data.error);
+
+        me = data.user;
+        initSocket(data.token);
+        document.getElementById('auth-panel').className = 'hidden';
+        document.getElementById('chat-panel').className = 'container';
+        document.getElementById('welcome').innerText = `Hello, ${me.username}!`;
     }
 
-    async function syncChat() {
-        const r = await fetch(WORKER_URL + '/api/messages/' + activePeer, {headers:{'Authorization':activeToken}});
-        const d = await r.json();
-        const h = document.getElementById('history');
-        if(h.children.length !== d.messages.length) {
-            h.innerHTML = d.messages.map(m => `<div class="msg ${m.sender_id===me.id?'me':'them'}">${m.content}</div>`).join('');
-            h.scrollTop = h.scrollHeight;
-        }
+    function initSocket(token) {
+        // Connect Socket.io to the tunnel address
+        socket = io(TUNNEL_URL, { auth: { token } });
+
+        socket.on('connect', () => {
+            console.log("Socket connected!");
+            document.getElementById('status').innerText = "Real-time Connected";
+        });
+
+        socket.on('receive_message', (msg) => {
+            if (activeChat && (msg.sender_id === activeChat.id || msg.sender_id === me.id)) {
+                renderMessages([...getHistory(), msg]);
+            }
+        });
     }
 
-    async function doUserSearch() {
-        const q = document.getElementById('srch-user').value;
-        const r = await fetch(WORKER_URL + '/api/users/search?q=' + q, {headers:{'Authorization':activeToken}});
-        const d = await r.json();
-        document.getElementById('srch-results').innerHTML = d.users.map(u => 
-            `<div>${u.username} <button onclick="selectPeer('${u.id}','${u.username}')" style="width:80px; padding:4px;">Chat</button></div>`
+    async function findFriends() {
+        const q = document.getElementById('search-peer').value;
+        const res = await fetch(`${TUNNEL_URL}/api/users/search?q=${q}`);
+        const data = await res.json();
+        document.getElementById('results').innerHTML = data.users.map(u => 
+            `<div>${u.username} <button onclick="setChat('${u.id}','${u.username}')" style="width:60px; padding:2px;">Chat</button></div>`
         ).join('');
     }
 
-    function selectPeer(id, n) { activePeer = id; document.getElementById('chat-box').className = ''; document.getElementById('peer-name').innerText = "Chatting with " + n; syncChat(); }
+    function setChat(id, name) {
+        activeChat = { id, name };
+        document.getElementById('chat-window').className = '';
+        document.getElementById('talking-to').innerText = "Chatting with " + name;
+        loadHistory();
+    }
+
+    async function loadHistory() {
+        const res = await fetch(`${TUNNEL_URL}/api/messages/${activeChat.id}`);
+        const data = await res.json();
+        renderMessages(data.messages);
+    }
+
+    function renderMessages(msgs) {
+        const box = document.getElementById('messages');
+        box.innerHTML = msgs.map(m => 
+            `<div class="msg ${m.sender_id === me.id ? 'me' : 'them'}">${m.content}</div>`
+        ).join('');
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function send() {
+        const content = document.getElementById('msg-content').value;
+        socket.emit('send_message', { receiver_id: activeChat.id, content });
+        document.getElementById('msg-content').value = '';
+    }
 </script>
 </body>
 </html>
