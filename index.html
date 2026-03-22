@@ -3,19 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nitro 2.0 - Local Test</title>
-    <!-- Use Socket.io from CDN to match your local server -->
+    <title>Nitro 2.0 - Local Test (Fixed Search)</title>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         body { font-family: sans-serif; background: #121212; color: #fff; margin:0; padding:20px; }
         .container { max-width: 500px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
         input, button { padding: 12px; margin: 8px 0; width: 100%; box-sizing: border-box; }
         button { background: #ca3e47; color: #fff; border:none; cursor:pointer; font-weight:bold; }
-        .chat-view { height: 300px; overflow-y: auto; background: #000; padding:10px; margin:10px 0; }
+        .chat-view { height: 300px; overflow-y: auto; background: #000; padding:10px; margin:10px 0; border: 1px solid #333; }
         .msg { margin:5px 0; padding:10px; border-radius:5px; max-width: 80%; }
         .msg.me { background: #333; margin-left: auto; text-align: right; }
         .msg.them { background: #ca3e47; }
         .hidden { display: none; }
+        .status { color: #00ff00; font-size: 14px; margin-bottom: 10px; }
     </style>
 </head>
 <body>
@@ -30,97 +30,111 @@
 
 <div id="chat-panel" class="container hidden">
     <h3 id="welcome">Welcome!</h3>
-    <div id="status" style="color:#00ff00;">Connected</div>
-    <hr>
-    <input type="text" id="search-peer" placeholder="Search for a user...">
+    <div id="conn-status" class="status">Connecting...</div>
+    <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
+    <input type="text" id="srch-peer" placeholder="Search for a user (2+ chars)...">
     <button onclick="findFriends()">Search</button>
-    <div id="results"></div>
-    <hr>
-    <div id="chat-window" class="hidden">
-        <h3 id="talking-to">Chatting</h3>
-        <div id="messages" class="chat-view"></div>
+    <div id="serch-results"></div>
+    <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
+    <div id="chat-win" class="hidden">
+        <h3 id="talk-title">Chat</h3>
+        <div id="history-box" class="chat-view"></div>
         <div style="display:flex; gap:10px;">
-            <input type="text" id="msg-content" placeholder="Type a message...">
-            <button onclick="send()" style="width:80px;">Send</button>
+            <input type="text" id="msg-input" placeholder="Message...">
+            <button onclick="sendMsg()" style="width:80px;">Send</button>
         </div>
     </div>
 </div>
 
 <script>
-    // --- IMPORTANT: CHANGE THIS TO YOUR .trycloudflare.com LINK ---
     const TUNNEL_URL = 'https://wool-corrected-anthropology-anthony.trycloudflare.com'; 
 
-    let socket = null, me = null, activeChat = null;
+    let socket = null, me = null, activeChat = null, authToken = '';
 
     async function login() { doAuth('login'); }
     async function register() { doAuth('register'); }
 
     async function doAuth(type) {
         const u = document.getElementById('u-name').value, p = document.getElementById('u-pass').value;
-        const res = await fetch(`${TUNNEL_URL}/api/${type}`, {
-            method: 'POST', body: JSON.stringify({username:u, password:p}),
-            headers: {'Content-Type': 'application/json'}
-        });
-        const data = await res.json();
-        if(data.error) return alert(data.error);
+        try {
+            const res = await fetch(`${TUNNEL_URL}/api/${type}`, {
+                method: 'POST', body: JSON.stringify({username:u, password:p}),
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await res.json();
+            if(data.error) throw new Error(data.error);
 
-        me = data.user;
-        initSocket(data.token);
-        document.getElementById('auth-panel').className = 'hidden';
-        document.getElementById('chat-panel').className = 'container';
-        document.getElementById('welcome').innerText = `Hello, ${me.username}!`;
+            me = data.user;
+            authToken = data.token;
+            initSocket();
+            document.getElementById('auth-panel').className = 'hidden';
+            document.getElementById('chat-panel').className = 'container';
+            document.getElementById('welcome').innerText = `Hello, ${me.username}!`;
+        } catch(e) { alert(e.message); }
     }
 
-    function initSocket(token) {
-        // Connect Socket.io to the tunnel address
-        socket = io(TUNNEL_URL, { auth: { token } });
+    function initSocket() {
+        socket = io(TUNNEL_URL);
 
         socket.on('connect', () => {
             console.log("Socket connected!");
-            document.getElementById('status').innerText = "Real-time Connected";
+            document.getElementById('conn-status').innerText = "Real-time Ready";
+            // Authenticate the socket
+            socket.emit('authenticate', { token: authToken });
         });
 
-        socket.on('receive_message', (msg) => {
+        socket.on('new_message', (msg) => {
             if (activeChat && (msg.sender_id === activeChat.id || msg.sender_id === me.id)) {
-                renderMessages([...getHistory(), msg]);
+                loadHistory(); 
             }
         });
     }
 
     async function findFriends() {
-        const q = document.getElementById('search-peer').value;
-        const res = await fetch(`${TUNNEL_URL}/api/users/search?q=${q}`);
+        const q = document.getElementById('srch-peer').value;
+        if (q.length < 2) return alert("Type at least 2 characters");
+
+        const res = await fetch(`${TUNNEL_URL}/api/users/search?q=${q}`, {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
         const data = await res.json();
-        document.getElementById('results').innerHTML = data.users.map(u => 
+        document.getElementById('serch-results').innerHTML = data.users.map(u => 
             `<div>${u.username} <button onclick="setChat('${u.id}','${u.username}')" style="width:60px; padding:2px;">Chat</button></div>`
         ).join('');
     }
 
     function setChat(id, name) {
         activeChat = { id, name };
-        document.getElementById('chat-window').className = '';
-        document.getElementById('talking-to').innerText = "Chatting with " + name;
+        document.getElementById('chat-win').className = '';
+        document.getElementById('talk-title').innerText = "Chat with " + name;
         loadHistory();
     }
 
     async function loadHistory() {
-        const res = await fetch(`${TUNNEL_URL}/api/messages/${activeChat.id}`);
+        if (!activeChat) return;
+        const res = await fetch(`${TUNNEL_URL}/api/messages/${activeChat.id}`, {
+            // Messages endpoint didn't require auth in server.js but good practice
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        // In this server version, messages might be handled via pure Socket.io, 
+        // but adding local search fetch for consistency.
         const data = await res.json();
-        renderMessages(data.messages);
+        if(data.messages) renderMessages(data.messages);
     }
 
     function renderMessages(msgs) {
-        const box = document.getElementById('messages');
+        const box = document.getElementById('history-box');
         box.innerHTML = msgs.map(m => 
             `<div class="msg ${m.sender_id === me.id ? 'me' : 'them'}">${m.content}</div>`
         ).join('');
         box.scrollTop = box.scrollHeight;
     }
 
-    function send() {
-        const content = document.getElementById('msg-content').value;
+    function sendMsg() {
+        if(!socket) return;
+        const content = document.getElementById('msg-input').value;
         socket.emit('send_message', { receiver_id: activeChat.id, content });
-        document.getElementById('msg-content').value = '';
+        document.getElementById('msg-input').value = '';
     }
 </script>
 </body>
